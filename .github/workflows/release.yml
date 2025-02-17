@@ -4,79 +4,91 @@ on:
   workflow_dispatch:
 
 jobs:
-
   release:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name : Setup test
-      run: 'echo "$PRIVATE_KEY" > gha-token-test.private-key.pem'
-      shell: bash
-      env:
-        PRIVATE_KEY: ${{secrets.PRIVATE_KEY}}
+      - name: Setup Test
+        run: echo "${{ secrets.PRIVATE_KEY }}" > gha-token-test.private-key.pem
 
-    - name: Set up Go
-      uses: actions/setup-go@v2
-      with:
-        go-version: 1.17
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'  # Updated Go version to a modern LTS release
 
-    - name: Lint
-      uses: golangci/golangci-lint-action@v2
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
 
-    - name: Build
-      run: go build -v ./...
+      - name: Build
+        run: go build -v ./...
 
-    - name: Test
-      run: go test -v ./...
+      - name: Run Tests
+        run: go test -v ./...
 
-    - name: Get Release Version from CHANGELOG
-      id: get-release-version
-      run: |
-        RELEASE_VERSION="$(cat CHANGELOG.md | grep '^## \[[0-9]' | head -n1 | sed -e 's/^.*\[//' -e 's/\].*$//')"
-        echo "Release Version in CHANGELOG: ${RELEASE_VERSION}"
-        [ -n "${RELEASE_VERSION}" ]
-        echo "::set-output name=RELEASE_VERSION::${RELEASE_VERSION}"
+      - name: Get Release Version from CHANGELOG
+        id: get-release-version
+        run: |
+          RELEASE_VERSION=$(grep '^## \[[0-9]' CHANGELOG.md | head -n1 | sed -e 's/^.*\[//' -e 's/\].*$//')
+          echo "Release Version in CHANGELOG: ${RELEASE_VERSION}"
+          [ -n "${RELEASE_VERSION}" ] || { echo "Error: No version found in CHANGELOG"; exit 1; }
+          echo "RELEASE_VERSION=${RELEASE_VERSION}" >> $GITHUB_ENV
 
-    - name: Get Release Notes from CHANGELOG
-      id: get-release-notes
-      run: |
-        RELEASE_NOTES="$(cat CHANGELOG.md | awk 'BEGIN {st=0} /^## \[[0-9]/ {st++; next} st==1 {print $0}')"
-        RELEASE_NOTES="${RELEASE_NOTES//'%'/'%25'}"
-        RELEASE_NOTES="${RELEASE_NOTES//$'\n'/'%0A'}"
-        RELEASE_NOTES="${RELEASE_NOTES//$'\r'/'%0D'}"
-        echo "::set-output name=RELEASE_NOTES::${RELEASE_NOTES}"
+      - name: Get Release Notes from CHANGELOG
+        id: get-release-notes
+        run: |
+          RELEASE_NOTES=$(awk 'BEGIN {st=0} /^## \[[0-9]/ {st++; next} st==1 {print $0}' CHANGELOG.md)
+          RELEASE_NOTES="${RELEASE_NOTES//'%'/'%25'}"
+          RELEASE_NOTES="${RELEASE_NOTES//$'\n'/'%0A'}"
+          RELEASE_NOTES="${RELEASE_NOTES//$'\r'/'%0D'}"
+          echo "RELEASE_NOTES=${RELEASE_NOTES}" >> $GITHUB_ENV
 
-    - name: Ensure Release Tag Does Not Exist
-      run: '! git rev-parse -q --verify "refs/tags/${{ steps.get-release-version.outputs.RELEASE_VERSION }}" >/dev/null'
+      - name: Ensure Release Tag Does Not Exist
+        run: |
+          if git rev-parse -q --verify "refs/tags/${RELEASE_VERSION}" >/dev/null; then
+            echo "Error: Release tag ${RELEASE_VERSION} already exists!"
+            exit 1
+          fi
 
-    - name: Create Release Artifacts
-      run: |
-        mkdir -p build/darwin build/linux
-        GOOS=linux GOARCH=amd64 go build -o build/linux/gha-token
-        tar -c -C build/linux -f build/gha-token_${{ steps.get-release-version.outputs.RELEASE_VERSION }}_linux_amd64.tar.gz gha-token
-        GOOS=darwin GOARCH=amd64 go build -o build/darwin/gha-token
-        tar -c -C build/darwin -f build/gha-token_${{ steps.get-release-version.outputs.RELEASE_VERSION }}_darwin_amd64.tar.gz gha-token
+      - name: Create Release Artifacts
+        run: |
+          mkdir -p build/darwin build/linux
 
-    - name: Create Release Tag
-      uses: actions/github-script@v3
-      with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        script: |
-          github.git.createRef({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            ref: "refs/tags/${{ steps.get-release-version.outputs.RELEASE_VERSION }}",
-            sha: context.sha
-          })
+          # Linux x86_64 (amd64)
+          GOOS=linux GOARCH=amd64 go build -o build/linux/gha-token
+          tar -czf build/gha-token_${RELEASE_VERSION}_linux_amd64.tar.gz -C build/linux gha-token
 
-    - name: Publish Release
-      uses: ncipollo/release-action@v1
-      with:
-        artifacts: "build/*.tar.gz"
-        name: "${{ steps.get-release-version.outputs.RELEASE_VERSION }}"
-        body: "${{ steps.get-release-notes.outputs.RELEASE_NOTES }}"
-        tag: "${{ steps.get-release-version.outputs.RELEASE_VERSION }}"
-        token: ${{ secrets.GITHUB_TOKEN }}
+          # macOS x86_64 (Intel)
+          GOOS=darwin GOARCH=amd64 go build -o build/darwin/gha-token
+          tar -czf build/gha-token_${RELEASE_VERSION}_darwin_amd64.tar.gz -C build/darwin gha-token
+
+          # macOS arm64 (Apple Silicon: M1/M2/M3)
+          GOOS=darwin GOARCH=arm64 go build -o build/darwin/gha-token-arm64
+          tar -czf build/gha-token_${RELEASE_VERSION}_darwin_arm64.tar.gz -C build/darwin gha-token-arm64
+
+      - name: Create Release Tag
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const releaseVersion = process.env.RELEASE_VERSION;
+            github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/${releaseVersion}`,
+              sha: context.sha
+            });
+
+      - name: Publish Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "build/*.tar.gz"
+          name: "${{ env.RELEASE_VERSION }}"
+          body: "${{ env.RELEASE_NOTES }}"
+          tag: "${{ env.RELEASE_VERSION }}"
+          token: ${{ secrets.GITHUB_TOKEN }}
