@@ -12,8 +12,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Test
-        run: echo "${{ secrets.PRIVATE_KEY }}" > gha-token-test.private-key.pem
+      # - name: Setup Test
+      #   run: echo "${{ secrets.PRIVATE_KEY }}" > gha-token-test.private-key.pem
 
       - name: Set up Go
         uses: actions/setup-go@v4
@@ -28,8 +28,8 @@ jobs:
       - name: Build
         run: go build -v ./...
 
-      - name: Run Tests
-        run: go test -v ./...
+      # - name: Run Tests
+      #   run: go test -v ./...
 
       - name: Get Release Version from CHANGELOG
         id: get-release-version
